@@ -380,31 +380,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Recommended Skills */}
-            {analysisResults.recommendedSkills.length > 0 && (
-              <div className="bg-gradient-to-br from-indigo-50 to-blue-50 rounded-xl shadow-lg p-6 border-2 border-indigo-200">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center">
-                  <svg className="w-6 h-6 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  Recommended Skills to Learn
-                </h2>
-                <p className="text-gray-600 mb-4 text-sm">
-                  Based on your current skills, here are some recommendations to enhance your profile:
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {analysisResults.recommendedSkills.map((skill, index) => (
-                    <span
-                      key={index}
-                      className="px-4 py-2 bg-white text-indigo-700 rounded-lg text-sm font-medium shadow-sm border border-indigo-200"
-                    >
-                      {skill}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {/* Category Analysis */}
             <div className="bg-white rounded-xl shadow-lg p-6">
               <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center">
