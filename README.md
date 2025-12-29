@@ -4,6 +4,71 @@ A full-stack, AI-driven application that analyzes resumes and generates personal
 
 ---
 
+## 📁 Project Structure
+
+```
+find-a-path/
+├── client/              # Next.js frontend application
+│   ├── app/             # Next.js app directory
+│   ├── package.json     # Frontend dependencies
+│   └── ...
+├── server/              # FastAPI backend application
+│   ├── main.py          # FastAPI application
+│   ├── requirements.txt # Python dependencies
+│   └── ...
+└── README.md            # Project documentation
+```
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js 18+ and npm
+- Python 3.8+
+- pip
+
+### Setup
+
+1. **Client (Frontend) Setup:**
+```bash
+cd client
+npm install
+npm run dev
+```
+Frontend runs on `http://localhost:3000`
+
+2. **Server (Backend) Setup:**
+```bash
+cd server
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
+python3 -m uvicorn main:app --reload --port 8000
+```
+
+Or use the start script:
+```bash
+cd server
+./start.sh
+```
+
+Backend runs on `http://localhost:8000`
+
+**Note:** If you get "command not found" errors, make sure:
+- Virtual environment is activated (you should see `(venv)` in your prompt)
+- Use `python3 -m pip` instead of just `pip`
+- Use `python3 -m uvicorn` instead of just `uvicorn`
+
+**Note:** First run will download Hugging Face models (~500MB), which may take a few minutes.
+
+### Usage
+1. Start both frontend and backend servers
+2. Open `http://localhost:3000` in your browser
+3. Upload a PDF or DOCX resume
+4. View extracted skills and analysis results
+
+---
+
 ## 🎯 Project Overview
 
 This project helps users understand their career trajectory by:
