@@ -4,11 +4,14 @@ from fastapi.responses import JSONResponse
 import io
 import fitz  # PyMuPDF
 from docx import Document
-from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
-from sentence_transformers import SentenceTransformer
-import torch
+import requests
+import os
 import re
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = FastAPI(title="Resume Analysis API")
 
@@ -21,35 +24,133 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize models (lazy loading)
-ner_model = None
-ner_tokenizer = None
-ner_pipeline = None
-sentence_model = None
+# Hugging Face API configuration
+# Using alternative NER models (dslim/bert-base-NER may be unavailable)
+HF_API_URL_NER_OPTIONS = [
+    "https://api-inference.huggingface.co/models/dbmdz/bert-large-cased-finetuned-conll03-english",
+    "https://api-inference.huggingface.co/models/xlm-roberta-large-finetuned-conll03-english",
+    "https://api-inference.huggingface.co/models/dslim/bert-base-NER",  # Fallback
+]
+HF_API_URL_NER = HF_API_URL_NER_OPTIONS[0]  # Use first working option
+HF_API_URL_EMBEDDING = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
+HF_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN", "")
 
-def load_ner_model():
-    """Load NER model for skill extraction"""
-    global ner_model, ner_tokenizer, ner_pipeline
-    if ner_pipeline is None:
-        print("Loading NER model...")
-        model_name = "dslim/bert-base-NER"
-        ner_pipeline = pipeline(
+# Log token status (without exposing the actual token)
+if HF_API_TOKEN:
+    print("✅ Hugging Face API token loaded successfully")
+else:
+    print("⚠️  No Hugging Face API token found. Using public API (may have rate limits)")
+
+def call_hf_api(url: str, inputs: str, task: str = "ner", retry_urls: List[str] = None):
+    """Call Hugging Face Inference API with fallback options"""
+    headers = {"Content-Type": "application/json"}
+    if HF_API_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_API_TOKEN}"
+    
+    payload = {"inputs": inputs}
+    
+    # List of URLs to try (for fallback)
+    urls_to_try = [url]
+    if retry_urls:
+        urls_to_try.extend(retry_urls)
+    
+    last_error = None
+    for attempt_url in urls_to_try:
+        try:
+            response = requests.post(attempt_url, headers=headers, json=payload, timeout=30)
+            
+            # Handle 410 Gone - try next URL
+            if response.status_code == 410:
+                print(f"⚠️  Model {attempt_url} returned 410 Gone, trying alternative...")
+                continue
+            
+            # Handle rate limiting and model loading
+            if response.status_code == 503:
+                error_data = response.json() if response.content else {}
+                if "loading" in str(error_data).lower():
+                    raise HTTPException(
+                        status_code=503, 
+                        detail="Model is loading, please try again in a few seconds"
+                    )
+            
+            response.raise_for_status()
+            return response.json()
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 410:
+                # 410 Gone - try next URL
+                last_error = e
+                continue
+            elif e.response.status_code == 429:
+                raise HTTPException(status_code=429, detail="Rate limit exceeded. Please try again later.")
+            else:
+                last_error = e
+                # If this is the last URL, raise the error
+                if attempt_url == urls_to_try[-1]:
+                    raise HTTPException(status_code=e.response.status_code, detail=f"API call failed: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if attempt_url == urls_to_try[-1]:
+                raise HTTPException(status_code=500, detail=f"API call failed: {str(e)}")
+    
+    # If all URLs failed with 410, raise error
+    if last_error:
+        raise HTTPException(status_code=410, detail="All NER models are unavailable. Please try again later or use an alternative approach.")
+
+def extract_skills_with_api(text: str):
+    """Extract skills using Hugging Face NER API with fallback"""
+    try:
+        # Call Hugging Face NER API with fallback options
+        result = call_hf_api(
+            HF_API_URL_NER, 
+            text, 
             "ner",
-            model=model_name,
-            tokenizer=model_name,
-            aggregation_strategy="simple"
+            retry_urls=HF_API_URL_NER_OPTIONS[1:]  # Try other models if first fails
         )
-        print("NER model loaded!")
-    return ner_pipeline
+        
+        # Process results
+        entities = []
+        if isinstance(result, list):
+            entities = result
+        elif isinstance(result, dict) and "error" in result:
+            # If model is loading, wait and retry
+            if "loading" in result["error"].lower():
+                raise HTTPException(status_code=503, detail="Model is loading, please try again in a few seconds")
+            raise HTTPException(status_code=500, detail=f"API error: {result['error']}")
+        
+        return entities
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calling NER API: {str(e)}")
 
-def load_sentence_model():
-    """Load sentence transformer model"""
-    global sentence_model
-    if sentence_model is None:
-        print("Loading sentence transformer model...")
-        sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-        print("Sentence transformer model loaded!")
-    return sentence_model
+def get_embeddings_with_api(text: str):
+    """Get embeddings using Hugging Face Inference API"""
+    try:
+        result = call_hf_api(HF_API_URL_EMBEDDING, text, "embedding")
+        
+        if isinstance(result, dict) and "error" in result:
+            if "loading" in result["error"].lower():
+                raise HTTPException(status_code=503, detail="Model is loading, please try again in a few seconds")
+            raise HTTPException(status_code=500, detail=f"API error: {result['error']}")
+        
+        # API returns embeddings as a list
+        if isinstance(result, list):
+            # If it's a list of lists, return the first one
+            if len(result) > 0 and isinstance(result[0], list):
+                return result[0]
+            return result
+        
+        return result
+    except HTTPException as e:
+        # If API fails, return None to trigger fallback
+        if e.status_code in [410, 503, 500]:
+            return None
+        raise
+    except Exception as e:
+        # Return None on any error to trigger fallback
+        print(f"⚠️  Embedding API error: {str(e)}, using fallback analysis")
+        return None
 
 def extract_text_from_pdf(file_content: bytes) -> str:
     """Extract text from PDF file"""
@@ -107,21 +208,65 @@ async def upload_resume(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
+def extract_skills_with_regex(text: str):
+    """Fallback: Extract skills using regex patterns when API fails"""
+    skills = []
+    
+    # Comprehensive skill patterns
+    skill_patterns = [
+        # Programming Languages
+        r'\b(?:Python|Java|JavaScript|TypeScript|C\+\+|C#|Go|Rust|Swift|Kotlin|Scala|Ruby|PHP|Perl|R|MATLAB)\b',
+        # Frontend
+        r'\b(?:React|Vue|Angular|Next\.js|Nuxt\.js|Svelte|HTML|CSS|SCSS|SASS|Tailwind|Bootstrap|Material-UI|Redux|MobX)\b',
+        # Backend
+        r'\b(?:Node\.js|Express|Django|Flask|FastAPI|Spring|Spring Boot|Laravel|ASP\.NET|Rails|GraphQL|REST API)\b',
+        # Databases
+        r'\b(?:PostgreSQL|MySQL|MongoDB|Redis|Elasticsearch|Cassandra|DynamoDB|SQLite|Oracle|SQL Server|NoSQL|SQL)\b',
+        # Cloud & DevOps
+        r'\b(?:AWS|Azure|GCP|Google Cloud|Docker|Kubernetes|Terraform|Ansible|Jenkins|CI/CD|Git|GitHub|GitLab)\b',
+        # Data Science
+        r'\b(?:Machine Learning|ML|Deep Learning|AI|Data Science|NLP|Computer Vision|TensorFlow|PyTorch|Keras|Pandas|NumPy|Scikit-learn)\b',
+        # Tools
+        r'\b(?:Linux|Unix|Bash|Shell|Agile|Scrum|JIRA|Confluence|Microservices|System Design|API Design)\b',
+    ]
+    
+    for pattern in skill_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        skills.extend(matches)
+    
+    return list(set(skills))  # Remove duplicates
+
 @app.post("/extract-skills")
 async def extract_skills(data: Dict[str, Any]):
     """
-    Extract skills and entities from resume text using NER model
+    Extract skills and entities from resume text using Hugging Face NER API
+    Falls back to regex extraction if API fails
     """
     try:
         text = data.get("text", "")
         if not text:
             raise HTTPException(status_code=400, detail="Text is required")
         
-        # Load NER model
-        ner = load_ner_model()
-        
-        # Extract entities
-        entities = ner(text)
+        # Try to extract entities using API
+        entities = []
+        try:
+            entities = extract_skills_with_api(text)
+        except HTTPException as e:
+            # If API fails (410, etc.), use regex fallback
+            if e.status_code in [410, 503, 500]:
+                print("⚠️  API unavailable, using regex-based skill extraction")
+                skills = extract_skills_with_regex(text)
+                return JSONResponse({
+                    "success": True,
+                    "skills": skills,
+                    "organizations": [],
+                    "locations": [],
+                    "persons": [],
+                    "total_entities": len(skills),
+                    "note": "Using regex extraction (API unavailable)"
+                })
+            else:
+                raise
         
         # Filter and categorize entities
         skills = []
@@ -141,21 +286,26 @@ async def extract_skills(data: Dict[str, Any]):
         ]
         
         for entity in entities:
-            entity_text = entity['word'].lower()
-            entity_type = entity['entity_group']
+            # Handle different API response formats
+            if isinstance(entity, dict):
+                entity_text = entity.get('word', entity.get('entity', '')).lower()
+                entity_type = entity.get('entity_group', entity.get('label', ''))
+                entity_word = entity.get('word', entity.get('entity', ''))
+            else:
+                continue
             
             # Categorize entities
             if entity_type == 'ORG':
-                organizations.append(entity['word'])
+                organizations.append(entity_word)
             elif entity_type == 'LOC':
-                locations.append(entity['word'])
+                locations.append(entity_word)
             elif entity_type == 'PER':
-                persons.append(entity['word'])
+                persons.append(entity_word)
             
             # Check if entity might be a skill
             if any(keyword in entity_text for keyword in skill_keywords):
-                if entity['word'] not in skills:
-                    skills.append(entity['word'])
+                if entity_word not in skills:
+                    skills.append(entity_word)
         
         # Extract additional skills using regex patterns
         skill_patterns = [
@@ -185,18 +335,45 @@ async def extract_skills(data: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error extracting skills: {str(e)}")
 
+def analyze_skills_fallback(skills: List[str], skill_categories: Dict[str, List[str]]):
+    """Fallback skill analysis using keyword matching when API fails"""
+    category_scores = {}
+    recommended_skills = []
+    user_skills_lower = [s.lower() for s in skills]
+    
+    for category, category_skills in skill_categories.items():
+        # Count how many skills from this category the user has
+        matching_skills = [s for s in category_skills if s.lower() in user_skills_lower]
+        match_count = len(matching_skills)
+        total_in_category = len(category_skills)
+        
+        # Calculate score based on percentage of category skills matched
+        if total_in_category > 0:
+            score = match_count / total_in_category
+        else:
+            score = 0.0
+        
+        category_scores[category] = float(score)
+        
+        # Find missing skills in this category
+        missing = [s for s in category_skills if s.lower() not in user_skills_lower]
+        
+        # Recommend skills if user has less than 50% of category skills
+        if missing and score < 0.5:
+            recommended_skills.extend(missing[:2])  # Top 2 from each category
+    
+    return category_scores, recommended_skills
+
 @app.post("/analyze-skills")
 async def analyze_skills(data: Dict[str, Any]):
     """
-    Analyze skills using sentence transformers for similarity and recommendations
+    Analyze skills using Hugging Face embedding API for similarity and recommendations
+    Falls back to keyword matching if API is unavailable
     """
     try:
         skills = data.get("skills", [])
         if not skills or len(skills) == 0:
             raise HTTPException(status_code=400, detail="Skills list is required")
-        
-        # Load sentence transformer model
-        model = load_sentence_model()
         
         # Common skill categories for analysis
         skill_categories = {
@@ -209,31 +386,91 @@ async def analyze_skills(data: Dict[str, Any]):
             "Tools & Others": ["Git", "Linux", "Agile", "Scrum", "Microservices", "System Design"]
         }
         
-        # Create embeddings for user skills
+        # Try to get embeddings for user skills using API
         user_skills_text = " ".join(skills)
-        user_embedding = model.encode([user_skills_text])
+        user_embedding = get_embeddings_with_api(user_skills_text)
         
-        # Analyze which categories the user has skills in
-        category_scores = {}
-        recommended_skills = []
-        
-        for category, category_skills in skill_categories.items():
-            category_text = " ".join(category_skills)
-            category_embedding = model.encode([category_text])
+        # If API failed, use fallback method
+        if user_embedding is None:
+            print("⚠️  Embedding API unavailable, using keyword-based analysis")
+            category_scores, recommended_skills = analyze_skills_fallback(skills, skill_categories)
+        else:
+            # Use embedding-based analysis
+            # Ensure it's a list
+            if not isinstance(user_embedding, list):
+                user_embedding = [user_embedding]
             
-            # Calculate similarity
-            from numpy import dot
-            from numpy.linalg import norm
-            similarity = dot(user_embedding[0], category_embedding[0]) / (norm(user_embedding[0]) * norm(category_embedding[0]))
+            # Analyze which categories the user has skills in
+            category_scores = {}
+            recommended_skills = []
             
-            category_scores[category] = float(similarity)
+            import numpy as np
             
-            # Find missing skills in this category
-            user_skills_lower = [s.lower() for s in skills]
-            missing = [s for s in category_skills if s.lower() not in user_skills_lower]
-            
-            if missing and similarity < 0.7:  # If low similarity, recommend skills
-                recommended_skills.extend(missing[:2])  # Top 2 from each category
+            for category, category_skills in skill_categories.items():
+                category_text = " ".join(category_skills)
+                category_embedding = get_embeddings_with_api(category_text)
+                
+                # If category embedding fails, use fallback for this category
+                if category_embedding is None:
+                    user_skills_lower = [s.lower() for s in skills]
+                    matching_skills = [s for s in category_skills if s.lower() in user_skills_lower]
+                    score = len(matching_skills) / len(category_skills) if category_skills else 0.0
+                    category_scores[category] = float(score)
+                    
+                    missing = [s for s in category_skills if s.lower() not in user_skills_lower]
+                    if missing and score < 0.5:
+                        recommended_skills.extend(missing[:2])
+                    continue
+                
+                # Ensure it's a list
+                if not isinstance(category_embedding, list):
+                    category_embedding = [category_embedding]
+                
+                # Validate embeddings are not None
+                if user_embedding is None or category_embedding is None:
+                    # Fallback for this category
+                    user_skills_lower = [s.lower() for s in skills]
+                    matching_skills = [s for s in category_skills if s.lower() in user_skills_lower]
+                    score = len(matching_skills) / len(category_skills) if category_skills else 0.0
+                    category_scores[category] = float(score)
+                    continue
+                
+                try:
+                    # Calculate cosine similarity
+                    user_emb = np.array(user_embedding)
+                    cat_emb = np.array(category_embedding)
+                    
+                    # Validate arrays are not empty
+                    if user_emb.size == 0 or cat_emb.size == 0:
+                        raise ValueError("Empty embedding array")
+                    
+                    # Normalize vectors
+                    user_norm = np.linalg.norm(user_emb)
+                    cat_norm = np.linalg.norm(cat_emb)
+                    
+                    if user_norm > 0 and cat_norm > 0:
+                        similarity = np.dot(user_emb, cat_emb) / (user_norm * cat_norm)
+                    else:
+                        similarity = 0.0
+                    
+                    category_scores[category] = float(similarity)
+                    
+                    # Find missing skills in this category
+                    user_skills_lower = [s.lower() for s in skills]
+                    missing = [s for s in category_skills if s.lower() not in user_skills_lower]
+                    
+                    if missing and similarity < 0.7:  # If low similarity, recommend skills
+                        recommended_skills.extend(missing[:2])  # Top 2 from each category
+                except (ValueError, TypeError) as e:
+                    # If numpy operations fail, use keyword matching for this category
+                    user_skills_lower = [s.lower() for s in skills]
+                    matching_skills = [s for s in category_skills if s.lower() in user_skills_lower]
+                    score = len(matching_skills) / len(category_skills) if category_skills else 0.0
+                    category_scores[category] = float(score)
+                    
+                    missing = [s for s in category_skills if s.lower() not in user_skills_lower]
+                    if missing and score < 0.5:
+                        recommended_skills.extend(missing[:2])
         
         # Get top 3 strongest categories
         top_categories = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)[:3]

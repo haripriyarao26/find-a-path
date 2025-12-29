@@ -59,7 +59,7 @@ Backend runs on `http://localhost:8000`
 - Use `python3 -m pip` instead of just `pip`
 - Use `python3 -m uvicorn` instead of just `uvicorn`
 
-**Note:** First run will download Hugging Face models (~500MB), which may take a few minutes.
+**Note:** The backend uses Hugging Face Inference API (no local model downloads needed - much faster!).
 
 ### Usage
 1. Start both frontend and backend servers
@@ -187,6 +187,17 @@ This project helps users understand their career trajectory by:
 | **Database**  | PostgreSQL / MongoDB / SQLite (MVP)                   |
 | **AI/NLP**    | GPT-3.5/4, LLaMA 2, SpaCy, Hugging Face Transformers |
 | **File Handling** | python-docx, pdfminer, PyMuPDF                    |
+
+---
+
+## 🔌 Free APIs Available
+
+See [FREE_APIS.md](./FREE_APIS.md) for a comprehensive list of free APIs you can integrate:
+- **OpenAI API** - For learning path generation
+- **Google Cloud Natural Language** - Enhanced entity extraction  
+- **Adzuna API** - Real job market data
+- **Gemini API** - Alternative AI analysis
+- And many more!
 
 ---
 

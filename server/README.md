@@ -1,6 +1,6 @@
 # Server API
 
-FastAPI backend for resume analysis using Hugging Face models.
+FastAPI backend for resume analysis using Hugging Face Inference API (no local models needed - much faster!).
 
 ## Setup
 
@@ -41,8 +41,47 @@ The API will be available at `http://localhost:8000`
 ## API Endpoints
 
 - `POST /upload-resume` - Extract text from PDF/DOCX resume
-- `POST /extract-skills` - Extract skills using NER model
-- `POST /analyze-skills` - Analyze skills using sentence transformers
+- `POST /extract-skills` - Extract skills using Hugging Face NER API
+- `POST /analyze-skills` - Analyze skills using Hugging Face embedding API
+
+## Hugging Face API Token
+
+The API works without a token, but **using a token gives you better rate limits and faster responses**.
+
+### Setting the Token (Recommended - Using .env file):
+
+1. Get a free token from: https://huggingface.co/settings/tokens
+
+2. Create a `.env` file in the `server/` directory:
+```bash
+cd server
+touch .env
+```
+
+3. Add your token to the `.env` file:
+```
+HUGGINGFACE_API_TOKEN=your_token_here
+```
+
+4. **Verify it's loaded:** When you start the server, you should see:
+   - ✅ `Hugging Face API token loaded successfully` (if token is set)
+   - ⚠️  `No Hugging Face API token found` (if not set)
+
+### Alternative: Environment Variable
+
+You can also set it as an environment variable:
+
+**macOS/Linux:**
+```bash
+export HUGGINGFACE_API_TOKEN=your_token_here
+```
+
+**Windows:**
+```bash
+set HUGGINGFACE_API_TOKEN=your_token_here
+```
+
+**Note:** The `.env` file method is recommended as it's easier to manage and doesn't require setting it each time you open a new terminal.
 
 ## API Documentation
 
